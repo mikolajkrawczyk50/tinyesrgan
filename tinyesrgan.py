@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""
+tinyesrgan - RealESRGAN super-resolution CLI (tinygrad)
+"""
+import argparse
+import glob
+import os
+import sys
+import time
+import numpy as np
+from PIL import Image
+from tinygrad import Tensor
+
+from model import RRDBNet, SRVGGNetCompact
+from weights import load_pth
+
+
+SCALE = 4
+
+
+def build_model(state: dict):
+    if "conv_first.weight" in state:
+        return RRDBNet().load_state_dict(state)
+    return SRVGGNetCompact().load_state_dict(state)
+
+
+def load_image(path: str) -> np.ndarray:
+    img = np.asarray(Image.open(path).convert("RGB"))
+    return img
+
+
+def save_image(img_rgb: np.ndarray, path: str):
+    Image.fromarray(img_rgb).save(path)
+
+
+def get_image_files(dir_path: str):
+    exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp")
+    files = []
+    for ext in exts:
+        files.extend(glob.glob(os.path.join(dir_path, ext)))
+    files.sort()
+    return files
+
+
+def pre_process(img_rgb: np.ndarray, pre_pad: int):
+    x = Tensor(img_rgb.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
+    if pre_pad:
+        x = x.pad((0, pre_pad, 0, pre_pad), mode="reflect")
+    return x
+
+
+def post_process(y: Tensor, pre_pad: int) -> np.ndarray:
+    if pre_pad:
+        y = y[:, :, : y.shape[2] - pre_pad * SCALE, : y.shape[3] - pre_pad * SCALE]
+    out = np.clip(y.clip(0.0, 1.0).numpy()[0] * 255.0, 0.0, 255.0).round().astype(np.uint8)
+    return out.transpose(1, 2, 0)
+
+
+def process(model, img_rgb: np.ndarray, pre_pad: int) -> np.ndarray:
+    x = pre_process(img_rgb, pre_pad)
+    y = model(x)
+    return post_process(y, pre_pad)
+
+
+def tile_process(
+    model,
+    img_rgb: np.ndarray,
+    tile: int = 128,
+    tile_pad: int = 10,
+    pre_pad: int = 10,
+) -> np.ndarray:
+    import math
+    from tinygrad import TinyJit
+
+    base = tile - 2 * tile_pad
+    assert base > 0, f"tile size ({tile}) must be greater than 2 * tile_pad ({2 * tile_pad})"
+
+    x = pre_process(img_rgb, pre_pad)
+    _, c, height, width = x.shape
+    out = np.zeros((1, c, height * SCALE, width * SCALE), dtype=np.float32)
+
+    tiles_x = math.ceil(width / base)
+    tiles_y = math.ceil(height / base)
+
+    pad_left = tile_pad
+    pad_top = tile_pad
+    pad_right = (tiles_x - 1) * base + tile - (width + pad_left)
+    pad_bottom = (tiles_y - 1) * base + tile - (height + pad_top)
+
+    x_np = x.numpy()
+    x_padded = np.pad(
+        x_np,
+        ((0, 0), (0, 0), (pad_top, max(0, pad_bottom)), (pad_left, max(0, pad_right))),
+        mode="reflect",
+    )
+
+    model_jit = TinyJit(model)
+
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            sx = tx * base
+            sy = ty * base
+            tile_np = x_padded[:, :, sy : sy + tile, sx : sx + tile]
+
+            tile_t = Tensor(tile_np)
+            y_tile = model_jit(tile_t).numpy()
+
+            in_x = tx * base
+            in_y = ty * base
+            w_valid = min(base, width - in_x)
+            h_valid = min(base, height - in_y)
+
+            oy_t = tile_pad * SCALE
+            ox_t = tile_pad * SCALE
+            h_t = h_valid * SCALE
+            w_t = w_valid * SCALE
+
+            oy = in_y * SCALE
+            ox = in_x * SCALE
+
+            out[:, :, oy : oy + h_t, ox : ox + w_t] = y_tile[:, :, oy_t : oy_t + h_t, ox_t : ox_t + w_t]
+
+    y = Tensor(out)
+    return post_process(y, pre_pad)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="RealESRGAN super-resolution (tinygrad)")
+    parser.add_argument("-i", "--input", required=True, help="Input image path or directory")
+    parser.add_argument("-o", "--output", required=True, help="Output image path (file mode) or directory (dir mode)")
+    parser.add_argument("-m", "--model", default="realesr-animevideov3.safetensors", help="Path to .safetensors model (default: realesr-animevideov3.safetensors)")
+    parser.add_argument("-t", "--tile", type=int, default=128, help="Tile size for processing, 0 disables tiling (default: 128)")
+    parser.add_argument("--tile_pad", type=int, default=10, help="Pad around each tile (default: 10)")
+    parser.add_argument("--pre_pad", type=int, default=10, help="Reflect padding before inference (default: 10)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.input):
+        parser.error(f"Input not found: {args.input}")
+
+    is_dir = os.path.isdir(args.input)
+
+    if is_dir:
+        input_files = get_image_files(args.input)
+        if not input_files:
+            sys.exit(f"Error: No images found in {args.input}")
+        os.makedirs(args.output, exist_ok=True)
+    else:
+        input_files = [args.input]
+
+    if args.verbose:
+        print(f"Loading model from {args.model}...")
+        if args.tile > 0:
+            print(f"Tiling enabled: tile={args.tile}, tile_pad={args.tile_pad}, base={args.tile - 2 * args.tile_pad}")
+
+    start_time = time.time()
+    state = load_pth(args.model)
+    model = build_model(state)
+    if args.verbose:
+        print(f"Model loaded in {time.time() - start_time:.2f}s")
+
+    if args.verbose:
+        print(f"Processing {len(input_files)} image(s)...")
+
+    for idx, in_path in enumerate(input_files):
+        if args.verbose:
+            print(f"  [{idx+1}/{len(input_files)}] {os.path.basename(in_path)}")
+
+        img_rgb = load_image(in_path)
+
+        t0 = time.time()
+        if args.tile > 0:
+            out = tile_process(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, pre_pad=args.pre_pad)
+        else:
+            out = process(model, img_rgb, pre_pad=args.pre_pad)
+
+        if args.verbose:
+            print(f"    Inference took {time.time() - t0:.2f}s, output {out.shape[1]}x{out.shape[0]}")
+
+        if is_dir:
+            out_name = os.path.splitext(os.path.basename(in_path))[0] + "_realesrgan.png"
+            out_path = os.path.join(args.output, out_name)
+        else:
+            out_path = args.output
+
+        save_image(out, out_path)
+
+        if args.verbose:
+            print(f"    Saved: {out_path}")
+
+    if args.verbose:
+        print(f"Total time: {time.time() - start_time:.2f}s")
+
+
+if __name__ == "__main__":
+    main()
