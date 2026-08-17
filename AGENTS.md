@@ -27,3 +27,7 @@ for pth in ['realesr-animevideov3.pth', 'RealESRGAN_x4plus.pth']:
 ## Testing
 
 Prefer `realesr-animevideov3.safetensors` (~2.5MB) for testing — smaller, faster. `RealESRGAN_x4plus.safetensors` (~67MB) is heavier and may timeout on GPU.
+
+## Precision
+
+FP16 not worth it — minimal speedup, visible quality loss on super-resolution. Use FP32.
