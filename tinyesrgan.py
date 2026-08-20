@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 tinyesrgan - RealESRGAN super-resolution CLI (tinygrad)
 """
@@ -7,13 +6,13 @@ import glob
 import os
 import sys
 import time
+
 import numpy as np
 from PIL import Image
 from tinygrad import Tensor
 
 from src.model import RRDBNet, SRVGGNetCompact
 from src.weights import load_pth
-
 
 SCALE = 4
 
@@ -42,29 +41,25 @@ def get_image_files(dir_path: str):
     return files
 
 
-def pre_process(img_rgb: np.ndarray, pre_pad: int):
+def pre_process(img_rgb: np.ndarray):
     x = Tensor(img_rgb.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
-    if pre_pad:
-        x = x.pad((0, pre_pad, 0, pre_pad), mode="reflect")
     return x
 
 
-def post_process(y: Tensor, pre_pad: int) -> np.ndarray:
-    if pre_pad:
-        y = y[:, :, : y.shape[2] - pre_pad * SCALE, : y.shape[3] - pre_pad * SCALE]
+def post_process(y: Tensor) -> np.ndarray:
     out = np.clip(y.clip(0.0, 1.0).numpy()[0] * 255.0, 0.0, 255.0).round().astype(np.uint8)
     return out.transpose(1, 2, 0)
 
 
-def process(model, img_rgb: np.ndarray, pre_pad: int) -> np.ndarray:
-    x = pre_process(img_rgb, pre_pad)
+def process(model, img_rgb: np.ndarray) -> np.ndarray:
+    x = pre_process(img_rgb)
     y = model(x)
-    return post_process(y, pre_pad)
+    return post_process(y)
 
 
 def _get_tta_variants(img: np.ndarray) -> list[np.ndarray]:
     """Generate 8 TTA variants (D4 dihedral group) matching realesrgan-ncnn-vulkan."""
-    h, w = img.shape[:2]
+    _, _ = img.shape[:2]
     variants = [
         img,
         np.flip(img, axis=1).copy(),  # hflip
@@ -80,7 +75,7 @@ def _get_tta_variants(img: np.ndarray) -> list[np.ndarray]:
 
 def _inverse_tta_variants(outputs: list[np.ndarray]) -> list[np.ndarray]:
     """Inverse transform 8 TTA variants back to original orientation."""
-    h, w = outputs[0].shape[:2]
+    _, _ = outputs[0].shape[:2]
     inversed = [
         outputs[0],
         np.flip(outputs[1], axis=1).copy(),  # inverse hflip
@@ -94,10 +89,10 @@ def _inverse_tta_variants(outputs: list[np.ndarray]) -> list[np.ndarray]:
     return inversed
 
 
-def process_tta(model, img_rgb: np.ndarray, pre_pad: int) -> np.ndarray:
+def process_tta(model, img_rgb: np.ndarray) -> np.ndarray:
     """Test Time Augmentation: average 8 predictions (D4 dihedral group) matching realesrgan-ncnn-vulkan."""
     variants = _get_tta_variants(img_rgb)
-    results = [process(model, v, pre_pad) for v in variants]
+    results = [process(model, v) for v in variants]
     inversed = _inverse_tta_variants(results)
     return np.clip(np.mean(inversed, axis=0) + 0.5, 0, 255).round().astype(np.uint8)
 
@@ -107,12 +102,11 @@ def tile_process_tta(
     img_rgb: np.ndarray,
     tile: int = 128,
     tile_pad: int | None = None,
-    pre_pad: int = 10,
     verbose: bool = False,
 ) -> np.ndarray:
     """Tiled TTA processing with 8 variants (D4 dihedral group)."""
     variants = _get_tta_variants(img_rgb)
-    results = [tile_process(model, v, tile, tile_pad, pre_pad, verbose) for v in variants]
+    results = [tile_process(model, v, tile, tile_pad, verbose) for v in variants]
     inversed = _inverse_tta_variants(results)
     return np.clip(np.mean(inversed, axis=0) + 0.5, 0, 255).round().astype(np.uint8)
 
@@ -122,11 +116,11 @@ def tile_process(
     img_rgb: np.ndarray,
     tile: int = 128,
     tile_pad: int | None = None,
-    pre_pad: int = 10,
     verbose: bool = False,
 ) -> np.ndarray:
     import math
     import time
+
     from tinygrad import TinyJit
 
     if tile_pad is None:
@@ -134,7 +128,7 @@ def tile_process(
     base = tile - 2 * tile_pad
     assert base > 0, f"tile size ({tile}) must be greater than 2 * tile_pad ({2 * tile_pad})"
 
-    x = pre_process(img_rgb, pre_pad)
+    x = pre_process(img_rgb)
     _, c, height, width = x.shape
     out = np.zeros((1, c, height * SCALE, width * SCALE), dtype=np.float32)
 
@@ -156,7 +150,7 @@ def tile_process(
     model_jit = TinyJit(model)
 
     n_tiles = tiles_x * tiles_y
-    tile_times = np.zeros(n_tiles, dtype=np.float64) if verbose else None
+    tile_times: list[float] = []
     for ty in range(tiles_y):
         for tx in range(tiles_x):
             sx = tx * base
@@ -168,8 +162,9 @@ def tile_process(
             y_tile = model_jit(tile_t).numpy()
 
             if verbose:
-                tile_times[ty * tiles_x + tx] = time.perf_counter() - t_start
-                print(f"    tile {ty * tiles_x + tx + 1}/{n_tiles} (x={tx}, y={ty}): {tile_times[ty * tiles_x + tx]:.3f}s")
+                elapsed = time.perf_counter() - t_start
+                tile_times.append(elapsed)
+                print(f"    tile {len(tile_times)}/{n_tiles} (x={tx}, y={ty}): {elapsed:.3f}s")
 
             in_x = tx * base
             in_y = ty * base
@@ -187,14 +182,15 @@ def tile_process(
             out[:, :, oy : oy + h_t, ox : ox + w_t] = y_tile[:, :, oy_t : oy_t + h_t, ox_t : ox_t + w_t]
 
     if verbose:
+        arr = np.array(tile_times, dtype=np.float64)
         print(
-            f"  Tiles: {n_tiles} total, avg {tile_times.mean() * 1000:.1f}ms, "
-            f"min {tile_times.min() * 1000:.1f}ms, max {tile_times.max() * 1000:.1f}ms, "
-            f"total {tile_times.sum():.3f}s"
+            f"  Tiles: {n_tiles} total, avg {arr.mean() * 1000:.1f}ms, "
+            f"min {arr.min() * 1000:.1f}ms, max {arr.max() * 1000:.1f}ms, "
+            f"total {arr.sum():.3f}s"
         )
 
     y = Tensor(out)
-    return post_process(y, pre_pad)
+    return post_process(y)
 
 
 def main():
@@ -202,15 +198,16 @@ def main():
     parser.add_argument("-i", "--input", required=True, help="Input image path or directory")
     parser.add_argument("-o", "--output", required=True, help="Output image path (file mode) or directory (dir mode)")
     parser.add_argument("-m", "--model", default="models/realesr-animevideov3.safetensors", help="Path to .safetensors model (default: models/realesr-animevideov3.safetensors)")
-    parser.add_argument("-t", "--tile", type=int, default=128, help="Tile size for processing, 0 disables tiling (default: 128)")
+    parser.add_argument("-t", "--tile", type=int, default=0, help="Tile size for processing, 0 disables tiling (default: 0)")
     parser.add_argument("--tile_pad", type=int, default=None, help="Pad around each tile (default: tile/8, 0 if tiling disabled)")
-    parser.add_argument("--pre_pad", type=int, default=10, help="Reflect padding before inference (default: 10)")
     parser.add_argument("-x", action="store_true", help="Enable Test Time Augmentation (8x inference, D4 dihedral group)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
     if args.tile_pad is None:
         args.tile_pad = args.tile // 8 if args.tile > 0 else 0
+    elif args.tile == 0:
+        args.tile_pad = 0
 
     if not os.path.exists(args.input):
         parser.error(f"Input not found: {args.input}")
@@ -250,14 +247,14 @@ def main():
         t0 = time.time()
         if args.x:
             if args.tile > 0:
-                out = tile_process_tta(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, pre_pad=args.pre_pad, verbose=args.verbose)
+                out = tile_process_tta(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, verbose=args.verbose)
             else:
-                out = process_tta(model, img_rgb, pre_pad=args.pre_pad)
+                out = process_tta(model, img_rgb)
         else:
             if args.tile > 0:
-                out = tile_process(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, pre_pad=args.pre_pad, verbose=args.verbose)
+                out = tile_process(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, verbose=args.verbose)
             else:
-                out = process(model, img_rgb, pre_pad=args.pre_pad)
+                out = process(model, img_rgb)
 
         if args.verbose:
             print(f"    Inference took {time.time() - t0:.2f}s, output {out.shape[1]}x{out.shape[0]}")

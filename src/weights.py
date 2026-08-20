@@ -5,7 +5,6 @@ if os.environ.get("CPU") and not os.environ["CPU"].lstrip("-").isdigit():
 
 import numpy as np
 from safetensors.numpy import load_file
-
 from tinygrad import Tensor
 
 
