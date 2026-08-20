@@ -66,12 +66,14 @@ def tile_process(
     model,
     img_rgb: np.ndarray,
     tile: int = 128,
-    tile_pad: int = 10,
+    tile_pad: int | None = None,
     pre_pad: int = 10,
 ) -> np.ndarray:
     import math
     from tinygrad import TinyJit
 
+    if tile_pad is None:
+        tile_pad = tile // 8 if tile > 0 else 0
     base = tile - 2 * tile_pad
     assert base > 0, f"tile size ({tile}) must be greater than 2 * tile_pad ({2 * tile_pad})"
 
@@ -130,10 +132,13 @@ def main():
     parser.add_argument("-o", "--output", required=True, help="Output image path (file mode) or directory (dir mode)")
     parser.add_argument("-m", "--model", default="realesr-animevideov3.safetensors", help="Path to .safetensors model (default: realesr-animevideov3.safetensors)")
     parser.add_argument("-t", "--tile", type=int, default=128, help="Tile size for processing, 0 disables tiling (default: 128)")
-    parser.add_argument("--tile_pad", type=int, default=10, help="Pad around each tile (default: 10)")
+    parser.add_argument("--tile_pad", type=int, default=None, help="Pad around each tile (default: tile/8, 0 if tiling disabled)")
     parser.add_argument("--pre_pad", type=int, default=10, help="Reflect padding before inference (default: 10)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
+
+    if args.tile_pad is None:
+        args.tile_pad = args.tile // 8 if args.tile > 0 else 0
 
     if not os.path.exists(args.input):
         parser.error(f"Input not found: {args.input}")
