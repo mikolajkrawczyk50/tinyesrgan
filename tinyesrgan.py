@@ -68,8 +68,10 @@ def tile_process(
     tile: int = 128,
     tile_pad: int | None = None,
     pre_pad: int = 10,
+    verbose: bool = False,
 ) -> np.ndarray:
     import math
+    import time
     from tinygrad import TinyJit
 
     if tile_pad is None:
@@ -98,14 +100,21 @@ def tile_process(
 
     model_jit = TinyJit(model)
 
+    n_tiles = tiles_x * tiles_y
+    tile_times = np.zeros(n_tiles, dtype=np.float64) if verbose else None
     for ty in range(tiles_y):
         for tx in range(tiles_x):
             sx = tx * base
             sy = ty * base
             tile_np = x_padded[:, :, sy : sy + tile, sx : sx + tile]
 
+            t_start = time.perf_counter()
             tile_t = Tensor(tile_np)
             y_tile = model_jit(tile_t).numpy()
+
+            if verbose:
+                tile_times[ty * tiles_x + tx] = time.perf_counter() - t_start
+                print(f"    tile {ty * tiles_x + tx + 1}/{n_tiles} (x={tx}, y={ty}): {tile_times[ty * tiles_x + tx]:.3f}s")
 
             in_x = tx * base
             in_y = ty * base
@@ -121,6 +130,13 @@ def tile_process(
             ox = in_x * SCALE
 
             out[:, :, oy : oy + h_t, ox : ox + w_t] = y_tile[:, :, oy_t : oy_t + h_t, ox_t : ox_t + w_t]
+
+    if verbose:
+        print(
+            f"  Tiles: {n_tiles} total, avg {tile_times.mean() * 1000:.1f}ms, "
+            f"min {tile_times.min() * 1000:.1f}ms, max {tile_times.max() * 1000:.1f}ms, "
+            f"total {tile_times.sum():.3f}s"
+        )
 
     y = Tensor(out)
     return post_process(y, pre_pad)
@@ -175,7 +191,7 @@ def main():
 
         t0 = time.time()
         if args.tile > 0:
-            out = tile_process(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, pre_pad=args.pre_pad)
+            out = tile_process(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, pre_pad=args.pre_pad, verbose=args.verbose)
         else:
             out = process(model, img_rgb, pre_pad=args.pre_pad)
 
