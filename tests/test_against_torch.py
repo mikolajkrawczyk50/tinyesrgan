@@ -3,8 +3,8 @@ import torch
 from PIL import Image
 from torch.nn import functional as F
 
-from model import RRDBNet, SRVGGNetCompact
-from weights import load_pth
+from src.model import RRDBNet, SRVGGNetCompact
+from src.weights import load_pth
 
 
 class TorchRRDB(torch.nn.Module):

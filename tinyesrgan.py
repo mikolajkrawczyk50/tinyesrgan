@@ -11,8 +11,8 @@ import numpy as np
 from PIL import Image
 from tinygrad import Tensor
 
-from model import RRDBNet, SRVGGNetCompact
-from weights import load_pth
+from src.model import RRDBNet, SRVGGNetCompact
+from src.weights import load_pth
 
 
 SCALE = 4
@@ -201,7 +201,7 @@ def main():
     parser = argparse.ArgumentParser(description="RealESRGAN super-resolution (tinygrad)")
     parser.add_argument("-i", "--input", required=True, help="Input image path or directory")
     parser.add_argument("-o", "--output", required=True, help="Output image path (file mode) or directory (dir mode)")
-    parser.add_argument("-m", "--model", default="realesr-animevideov3.safetensors", help="Path to .safetensors model (default: realesr-animevideov3.safetensors)")
+    parser.add_argument("-m", "--model", default="models/realesr-animevideov3.safetensors", help="Path to .safetensors model (default: models/realesr-animevideov3.safetensors)")
     parser.add_argument("-t", "--tile", type=int, default=128, help="Tile size for processing, 0 disables tiling (default: 128)")
     parser.add_argument("--tile_pad", type=int, default=None, help="Pad around each tile (default: tile/8, 0 if tiling disabled)")
     parser.add_argument("--pre_pad", type=int, default=10, help="Reflect padding before inference (default: 10)")
