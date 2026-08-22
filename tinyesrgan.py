@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
 """
 tinyesrgan - RealESRGAN super-resolution CLI (tinygrad)
 """
 import argparse
 import glob
 import os
+import re
 import sys
 import time
 
@@ -15,6 +17,20 @@ from src.model import RRDBNet, SRVGGNetCompact
 from src.weights import load_pth
 
 SCALE = 4
+
+
+def resolve_model_path(path: str) -> str:
+    if os.path.isdir(path):
+        for name in ("realesr-animevideov3.safetensors", "realesrgan-x4plus.safetensors"):
+            st = os.path.join(path, name)
+            if os.path.exists(st):
+                return st
+        raise FileNotFoundError(f"safetensors weights not found in directory: {path}")
+    if not os.path.exists(path) and os.path.exists(f"{path}.safetensors"):
+        return f"{path}.safetensors"
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Model weights file not found: {path}")
+    return path
 
 
 def build_model(state: dict):
@@ -37,7 +53,8 @@ def get_image_files(dir_path: str):
     files = []
     for ext in exts:
         files.extend(glob.glob(os.path.join(dir_path, ext)))
-    files.sort()
+    # Natural sort to handle both zero-padded (0001.png) and unpadded (1.png) filenames
+    files.sort(key=lambda p: [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', os.path.basename(p))])
     return files
 
 
@@ -111,6 +128,19 @@ def tile_process_tta(
     return np.clip(np.mean(inversed, axis=0) + 0.5, 0, 255).round().astype(np.uint8)
 
 
+_jit_cache: dict = {}
+
+
+def get_jitted_model(model, tile: int):
+    """Retrieve or create a cached TinyJit wrapper for constant tile shapes."""
+    from tinygrad import TinyJit
+
+    key = (id(model), tile)
+    if key not in _jit_cache:
+        _jit_cache[key] = TinyJit(model)
+    return _jit_cache[key]
+
+
 def tile_process(
     model,
     img_rgb: np.ndarray,
@@ -119,9 +149,6 @@ def tile_process(
     verbose: bool = False,
 ) -> np.ndarray:
     import math
-    import time
-
-    from tinygrad import TinyJit
 
     if tile_pad is None:
         tile_pad = tile // 8 if tile > 0 else 0
@@ -147,7 +174,7 @@ def tile_process(
         mode="reflect",
     )
 
-    model_jit = TinyJit(model)
+    model_jit = get_jitted_model(model, tile)
 
     n_tiles = tiles_x * tiles_y
     tile_times: list[float] = []
@@ -193,19 +220,41 @@ def tile_process(
     return post_process(y)
 
 
+def inference(
+    model,
+    img_rgb: np.ndarray,
+    tile: int = 128,
+    tile_pad: int | None = None,
+    tta: bool = False,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Unified inference interface for super-resolution."""
+    if tile_pad is None:
+        tile_pad = tile // 8 if tile > 0 else 0
+
+    if tta:
+        if tile > 0:
+            return tile_process_tta(model, img_rgb, tile=tile, tile_pad=tile_pad, verbose=verbose)
+        return process_tta(model, img_rgb)
+    if tile > 0:
+        return tile_process(model, img_rgb, tile=tile, tile_pad=tile_pad, verbose=verbose)
+    return process(model, img_rgb)
+
+
 def main():
     parser = argparse.ArgumentParser(description="RealESRGAN super-resolution (tinygrad)")
     parser.add_argument("-i", "--input", required=True, help="Input image path or directory")
     parser.add_argument("-o", "--output", required=True, help="Output image path (file mode) or directory (dir mode)")
     parser.add_argument("-m", "--model", default="models/realesr-animevideov3.safetensors", help="Path to .safetensors model (default: models/realesr-animevideov3.safetensors)")
-    parser.add_argument("-t", "--tile", type=int, default=0, help="Tile size for processing, 0 disables tiling (default: 0)")
-    parser.add_argument("--tile_pad", type=int, default=None, help="Pad around each tile (default: tile/8, 0 if tiling disabled)")
-    parser.add_argument("-x", action="store_true", help="Enable Test Time Augmentation (8x inference, D4 dihedral group)")
+    parser.add_argument("-t", "--tile", type=int, default=128, help="Tile size for processing, 0 disables tiling (default: 128)")
+    parser.add_argument("--tile_pad", type=int, default=None, help="Pad around each tile (default: tile/8)")
+    parser.add_argument("-x", "--tta", action="store_true", help="Enable Test Time Augmentation (8x inference, D4 dihedral group)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
-    if args.tile_pad is None:
-        args.tile_pad = args.tile // 8 if args.tile > 0 else 0
+    if args.tile > 0:
+        if args.tile_pad is None:
+            args.tile_pad = args.tile // 8
     elif args.tile == 0:
         args.tile_pad = 0
 
@@ -222,15 +271,17 @@ def main():
     else:
         input_files = [args.input]
 
+    model_path = resolve_model_path(args.model)
+
     if args.verbose:
-        print(f"Loading model from {args.model}...")
+        print(f"Loading model from {model_path}...")
         if args.tile > 0:
             print(f"Tiling enabled: tile={args.tile}, tile_pad={args.tile_pad}, base={args.tile - 2 * args.tile_pad}")
-        if args.x:
+        if args.tta:
             print("TTA enabled: 8x inference (D4 dihedral group)")
 
     start_time = time.time()
-    state = load_pth(args.model)
+    state = load_pth(model_path)
     model = build_model(state)
     if args.verbose:
         print(f"Model loaded in {time.time() - start_time:.2f}s")
@@ -245,16 +296,7 @@ def main():
         img_rgb = load_image(in_path)
 
         t0 = time.time()
-        if args.x:
-            if args.tile > 0:
-                out = tile_process_tta(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, verbose=args.verbose)
-            else:
-                out = process_tta(model, img_rgb)
-        else:
-            if args.tile > 0:
-                out = tile_process(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, verbose=args.verbose)
-            else:
-                out = process(model, img_rgb)
+        out = inference(model, img_rgb, tile=args.tile, tile_pad=args.tile_pad, tta=args.tta, verbose=args.verbose)
 
         if args.verbose:
             print(f"    Inference took {time.time() - t0:.2f}s, output {out.shape[1]}x{out.shape[0]}")

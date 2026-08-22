@@ -1,8 +1,3 @@
-import os
-
-if os.environ.get("CPU") and not os.environ["CPU"].lstrip("-").isdigit():
-    os.environ.pop("CPU")
-
 from tinygrad import Tensor
 
 

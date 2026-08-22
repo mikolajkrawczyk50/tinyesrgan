@@ -1,8 +1,3 @@
-import os
-
-if os.environ.get("CPU") and not os.environ["CPU"].lstrip("-").isdigit():
-    os.environ.pop("CPU")
-
 import numpy as np
 from safetensors.numpy import load_file
 from tinygrad import Tensor
@@ -18,3 +13,7 @@ def load_pth(path: str, device=None, dtype=None) -> dict[str, Tensor]:
             arr = arr.astype(dtype)
         state[k] = Tensor(arr, device=device)
     return state
+
+
+# Alias for cross-project naming consistency
+load_safetensors_weights = load_pth

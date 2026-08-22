@@ -16,11 +16,13 @@ from tinyesrgan import (
     _inverse_tta_variants,
     build_model,
     get_image_files,
+    inference,
     load_image,
     post_process,
     pre_process,
     process,
     process_tta,
+    resolve_model_path,
     save_image,
     tile_process,
     tile_process_tta,
@@ -221,6 +223,24 @@ class TestProcess:
         assert out.shape == (128, 128, 3)
         assert out.dtype == np.uint8
 
+    def test_inference_modes(self):
+        model = SRVGGNetCompact()
+        state = load_pth("models/realesr-animevideov3.safetensors")
+        model.load_state_dict(state)
+
+        img = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+        out_plain = inference(model, img)
+        assert out_plain.shape == (128, 128, 3)
+
+        out_tiled = inference(model, img, tile=64, tile_pad=8)
+        assert out_tiled.shape == (128, 128, 3)
+
+        out_tta = inference(model, img, tta=True)
+        assert out_tta.shape == (128, 128, 3)
+
+        out_tiled_tta = inference(model, img, tile=64, tile_pad=8, tta=True)
+        assert out_tiled_tta.shape == (128, 128, 3)
+
 
 class TestTileProcess:
     """Test tiled processing."""
@@ -360,6 +380,41 @@ class TestImageIO:
             files = get_image_files(tmpdir)
             assert len(files) == 5
             assert all(Path(f).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp") for f in files)
+
+    def test_get_image_files_natural_sorting(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name in ["frame_10.png", "frame_2.png", "frame_1.png", "frame_20.png"]:
+                Path(tmpdir, name).write_bytes(b"fake")
+            files = [Path(f).name for f in get_image_files(tmpdir)]
+            assert files == ["frame_1.png", "frame_2.png", "frame_10.png", "frame_20.png"]
+
+
+class TestResolveModelPath:
+    """Test model path resolution."""
+
+    def test_resolve_exact_file(self):
+        resolved = resolve_model_path("models/realesr-animevideov3.safetensors")
+        assert resolved == "models/realesr-animevideov3.safetensors"
+
+    def test_resolve_without_extension(self):
+        resolved = resolve_model_path("models/realesr-animevideov3")
+        assert resolved == "models/realesr-animevideov3.safetensors"
+
+    def test_resolve_directory(self):
+        resolved = resolve_model_path("models")
+        assert resolved in (
+            "models/realesr-animevideov3.safetensors",
+            "models/realesrgan-x4plus.safetensors",
+        )
+
+    def test_resolve_nonexistent(self):
+        with pytest.raises(FileNotFoundError):
+            resolve_model_path("models/nonexistent_model_123.safetensors")
+
+    def test_resolve_empty_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(FileNotFoundError):
+                resolve_model_path(tmpdir)
 
 
 class TestTileCalculations:
