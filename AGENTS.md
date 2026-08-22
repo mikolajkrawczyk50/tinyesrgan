@@ -1,5 +1,9 @@
 # Development Notes
 
+## Philosophy
+
+tinyesrgan is a minimal, KISS (Keep It Simple, Stupid) super-resolution project built on tinygrad. Keep dependencies minimal, code simple and readable, and avoid unnecessary abstractions.
+
 ## Recommended Runtime Environment
 
 For best performance on AMD GPUs, use:

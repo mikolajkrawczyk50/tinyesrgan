@@ -1,10 +1,15 @@
+import os
+from pathlib import Path
+
 import numpy as np
+import pytest
 import torch
 from PIL import Image
 from torch.nn import functional as F
 
-from src.model import RRDBNet, SRVGGNetCompact
+from src.model import RRDB, ResidualDenseBlock, RRDBNet, SRVGGNetCompact
 from src.weights import load_pth
+from tinygrad import Tensor
 
 
 class TorchRRDB(torch.nn.Module):
@@ -92,15 +97,102 @@ def test_reflect_pad():
     a = rng.uniform(0, 1, (1, 3, 64, 64)).astype(np.float32)
     pre_pad = 10
     torch_ref = F.pad(torch.from_numpy(a), (0, pre_pad, 0, pre_pad), mode="reflect")
-    from tinygrad import Tensor
-
     tiny = Tensor(a).pad((0, pre_pad, 0, pre_pad), mode="reflect")
     diff = np.abs(torch_ref.numpy() - tiny.numpy()).max()
     assert diff < 1e-6, f"reflect pad mismatch: {diff}"
-    print(f"[ok] reflect pad max diff = {diff:.2e}")
 
 
-def test_full_model(pth_path, st_path):
+def test_torch_srvgg_parity():
+    """Verify numerical parity between TorchSRVGG and SRVGGNetCompact on random weights."""
+    torch_model = TorchSRVGG(num_conv=2)
+    torch_model.eval()
+
+    tiny_model = SRVGGNetCompact(num_conv=2)
+    state = {k: Tensor(v.detach().numpy()) for k, v in torch_model.state_dict().items()}
+    tiny_model.load_state_dict(state)
+
+    rng = np.random.default_rng(42)
+    x = rng.uniform(0, 1, (1, 3, 16, 16)).astype(np.float32)
+
+    with torch.no_grad():
+        y_torch = torch_model(torch.from_numpy(x)).numpy()
+
+    y_tiny = tiny_model(Tensor(x)).numpy()
+    diff = np.abs(y_torch - y_tiny).max()
+    assert diff < 1e-4, f"SRVGG parity diff too large: {diff}"
+
+
+def test_torch_rdb_parity():
+    """Verify numerical parity between TorchRDB and ResidualDenseBlock on random weights."""
+    torch_rdb = TorchRDB()
+    torch_rdb.eval()
+
+    tiny_rdb = ResidualDenseBlock()
+    for k in range(5):
+        conv_torch = getattr(torch_rdb, f"conv{k+1}")
+        tiny_rdb.convs[k] = (
+            Tensor(conv_torch.weight.detach().numpy()),
+            Tensor(conv_torch.bias.detach().numpy()),
+        )
+
+    rng = np.random.default_rng(42)
+    x = rng.uniform(0, 1, (1, 64, 16, 16)).astype(np.float32)
+
+    with torch.no_grad():
+        y_torch = torch_rdb(torch.from_numpy(x)).numpy()
+
+    y_tiny = tiny_rdb(Tensor(x)).numpy()
+    diff = np.abs(y_torch - y_tiny).max()
+    assert diff < 1e-4, f"RDB parity diff too large: {diff}"
+
+
+def test_torch_rrdb_parity():
+    """Verify numerical parity between TorchRRDB and RRDB on random weights."""
+    torch_rrdb = TorchRRDB()
+    torch_rrdb.eval()
+
+    tiny_rrdb = RRDB()
+    for j in range(3):
+        rdb_torch = getattr(torch_rrdb, f"rdb{j+1}")
+        for k in range(5):
+            conv_torch = getattr(rdb_torch, f"conv{k+1}")
+            tiny_rrdb.rdbs[j].convs[k] = (
+                Tensor(conv_torch.weight.detach().numpy()),
+                Tensor(conv_torch.bias.detach().numpy()),
+            )
+
+    rng = np.random.default_rng(42)
+    x = rng.uniform(0, 1, (1, 64, 16, 16)).astype(np.float32)
+
+    with torch.no_grad():
+        y_torch = torch_rrdb(torch.from_numpy(x)).numpy()
+
+    y_tiny = tiny_rrdb(Tensor(x)).numpy()
+    diff = np.abs(y_torch - y_tiny).max()
+    assert diff < 1e-4, f"RRDB parity diff too large: {diff}"
+
+
+def test_torch_rrdbnet_parity():
+    """Verify numerical parity between TorchRRDBNet and RRDBNet on random weights."""
+    torch_model = TorchRRDBNet(num_block=2)
+    torch_model.eval()
+
+    tiny_model = RRDBNet(num_block=2)
+    state = {k: Tensor(v.detach().numpy()) for k, v in torch_model.state_dict().items()}
+    tiny_model.load_state_dict(state)
+
+    rng = np.random.default_rng(1)
+    x = rng.uniform(0, 1, (1, 3, 16, 16)).astype(np.float32)
+
+    with torch.no_grad():
+        y_torch = torch_model(torch.from_numpy(x)).numpy()
+
+    y_tiny = tiny_model(Tensor(x)).numpy()
+    diff = np.abs(y_torch - y_tiny).max()
+    assert diff < 1e-4, f"RRDBNet parity diff too large: {diff}"
+
+
+def verify_full_model(pth_path: str, st_path: str):
     sd = torch.load(pth_path, map_location="cpu", weights_only=True)
     params = sd["params_ema"] if "params_ema" in sd else sd["params"]
 
@@ -116,8 +208,6 @@ def test_full_model(pth_path, st_path):
     with torch.no_grad():
         y_torch = torch_model(torch.from_numpy(x)).numpy()
 
-    from tinygrad import Tensor
-
     y_tiny = tiny_model(Tensor(x)).numpy()
 
     diff = np.abs(y_torch - y_tiny)
@@ -128,7 +218,7 @@ def test_full_model(pth_path, st_path):
     assert diff.max() < 1e-3, "outputs differ too much from torch reference"
 
 
-def test_rrdbnet(pth_path, st_path):
+def verify_rrdbnet(pth_path: str, st_path: str):
     sd = torch.load(pth_path, map_location="cpu", weights_only=True)
     params = sd["params_ema"] if "params_ema" in sd else sd["params"]
 
@@ -144,8 +234,6 @@ def test_rrdbnet(pth_path, st_path):
     with torch.no_grad():
         y_torch = torch_model(torch.from_numpy(x)).numpy()
 
-    from tinygrad import Tensor
-
     y_tiny = tiny_model(Tensor(x)).numpy()
 
     diff = np.abs(y_torch - y_tiny)
@@ -156,14 +244,9 @@ def test_rrdbnet(pth_path, st_path):
     assert diff.max() < 1e-3, "outputs differ too much from torch reference"
 
 
-def test_tiled_golden_images(model_name: str, ckpt_path: str, golden_dir: str):
-    """Compare tinygrad tiled inference output against torch golden images (tile=32, pre_pad=10).
-
-    Golden images are generated with the original Real-ESRGAN impl (tile=32, tile_pad=10, pre_pad=10).
-    """
-    from pathlib import Path
-
-    from realesrgan import build_model, tile_process
+def verify_tiled_golden_images(model_name: str, ckpt_path: str, golden_dir: str):
+    """Compare tinygrad tiled inference output against torch golden images."""
+    from tinyesrgan import build_model, tile_process
 
     model = build_model(load_pth(ckpt_path))
     for in_path in sorted(Path("golden_inputs").glob("*.png")):
@@ -171,7 +254,7 @@ def test_tiled_golden_images(model_name: str, ckpt_path: str, golden_dir: str):
         assert golden_path.exists(), f"missing golden {golden_path}"
 
         img = np.asarray(Image.open(in_path).convert("RGB"))
-        out = tile_process(model, img, scale=4, pre_pad=10, tile=32, tile_pad=10, fp16=False)
+        out = tile_process(model, img, tile=32, tile_pad=10)
         golden = np.asarray(Image.open(golden_path).convert("RGB")).astype(np.float32)
 
         assert out.shape == golden.shape, f"shape mismatch {out.shape} vs {golden.shape}"
@@ -189,8 +272,18 @@ if __name__ == "__main__":
     st_x4plus = pth_x4plus.replace(".pth", ".safetensors")
 
     test_reflect_pad()
-    test_full_model(pth_anime, st_anime)
-    test_rrdbnet(pth_x4plus, st_x4plus)
-    test_tiled_golden_images("animevideov3", st_anime, "golden_outputs_torch_animevideov3_t32")
-    test_tiled_golden_images("x4plus", st_x4plus, "golden_outputs_torch_x4plus_t32")
+    test_torch_srvgg_parity()
+    test_torch_rdb_parity()
+    test_torch_rrdb_parity()
+    test_torch_rrdbnet_parity()
+
+    if os.path.exists(pth_anime) and os.path.exists(st_anime):
+        verify_full_model(pth_anime, st_anime)
+    if os.path.exists(pth_x4plus) and os.path.exists(st_x4plus):
+        verify_rrdbnet(pth_x4plus, st_x4plus)
+    if os.path.exists("golden_inputs"):
+        if os.path.exists("golden_outputs_torch_animevideov3_t32"):
+            verify_tiled_golden_images("animevideov3", st_anime, "golden_outputs_torch_animevideov3_t32")
+        if os.path.exists("golden_outputs_torch_x4plus_t32"):
+            verify_tiled_golden_images("x4plus", st_x4plus, "golden_outputs_torch_x4plus_t32")
     print("all tests passed")

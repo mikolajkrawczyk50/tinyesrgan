@@ -37,18 +37,19 @@ class TestModelComponents:
         assert model.upscale == 4
 
     def test_srvggnet_compact_load_state_dict(self):
+        from tinygrad import Tensor
         model = SRVGGNetCompact()
         state = {
-            "body.0.weight": np.random.randn(64, 3, 3, 3).astype(np.float32),
-            "body.0.bias": np.random.randn(64).astype(np.float32),
-            "body.1.weight": np.random.randn(64).astype(np.float32),
+            "body.0.weight": Tensor(np.random.randn(64, 3, 3, 3).astype(np.float32)),
+            "body.0.bias": Tensor(np.random.randn(64).astype(np.float32)),
+            "body.1.weight": Tensor(np.random.randn(64).astype(np.float32)),
         }
         for i in range(1, 17):
-            state[f"body.{2*i}.weight"] = np.random.randn(64, 64, 3, 3).astype(np.float32)
-            state[f"body.{2*i}.bias"] = np.random.randn(64).astype(np.float32)
-            state[f"body.{2*i+1}.weight"] = np.random.randn(64).astype(np.float32)
-        state["body.34.weight"] = np.random.randn(48, 64, 3, 3).astype(np.float32)
-        state["body.34.bias"] = np.random.randn(48).astype(np.float32)
+            state[f"body.{2*i}.weight"] = Tensor(np.random.randn(64, 64, 3, 3).astype(np.float32))
+            state[f"body.{2*i}.bias"] = Tensor(np.random.randn(64).astype(np.float32))
+            state[f"body.{2*i+1}.weight"] = Tensor(np.random.randn(64).astype(np.float32))
+        state["body.34.weight"] = Tensor(np.random.randn(48, 64, 3, 3).astype(np.float32))
+        state["body.34.bias"] = Tensor(np.random.randn(48).astype(np.float32))
 
         loaded = model.load_state_dict(state)
         assert loaded is model
@@ -66,27 +67,28 @@ class TestModelComponents:
         assert hasattr(model, "conv_last")
 
     def test_rrdbnet_load_state_dict(self):
+        from tinygrad import Tensor
         model = RRDBNet(num_block=2)
         state = {
-            "conv_first.weight": np.random.randn(64, 3, 3, 3).astype(np.float32),
-            "conv_first.bias": np.random.randn(64).astype(np.float32),
-            "conv_body.weight": np.random.randn(64, 64, 3, 3).astype(np.float32),
-            "conv_body.bias": np.random.randn(64).astype(np.float32),
-            "conv_up1.weight": np.random.randn(64, 64, 3, 3).astype(np.float32),
-            "conv_up1.bias": np.random.randn(64).astype(np.float32),
-            "conv_up2.weight": np.random.randn(64, 64, 3, 3).astype(np.float32),
-            "conv_up2.bias": np.random.randn(64).astype(np.float32),
-            "conv_hr.weight": np.random.randn(64, 64, 3, 3).astype(np.float32),
-            "conv_hr.bias": np.random.randn(64).astype(np.float32),
-            "conv_last.weight": np.random.randn(3, 64, 3, 3).astype(np.float32),
-            "conv_last.bias": np.random.randn(3).astype(np.float32),
+            "conv_first.weight": Tensor(np.random.randn(64, 3, 3, 3).astype(np.float32)),
+            "conv_first.bias": Tensor(np.random.randn(64).astype(np.float32)),
+            "conv_body.weight": Tensor(np.random.randn(64, 64, 3, 3).astype(np.float32)),
+            "conv_body.bias": Tensor(np.random.randn(64).astype(np.float32)),
+            "conv_up1.weight": Tensor(np.random.randn(64, 64, 3, 3).astype(np.float32)),
+            "conv_up1.bias": Tensor(np.random.randn(64).astype(np.float32)),
+            "conv_up2.weight": Tensor(np.random.randn(64, 64, 3, 3).astype(np.float32)),
+            "conv_up2.bias": Tensor(np.random.randn(64).astype(np.float32)),
+            "conv_hr.weight": Tensor(np.random.randn(64, 64, 3, 3).astype(np.float32)),
+            "conv_hr.bias": Tensor(np.random.randn(64).astype(np.float32)),
+            "conv_last.weight": Tensor(np.random.randn(3, 64, 3, 3).astype(np.float32)),
+            "conv_last.bias": Tensor(np.random.randn(3).astype(np.float32)),
         }
         for i in range(2):
             for j in range(3):
                 for k in range(5):
                     prefix = f"body.{i}.rdb{j+1}.conv{k+1}"
-                    state[f"{prefix}.weight"] = np.random.randn(32 if k < 4 else 64, 64 + 32 * k, 3, 3).astype(np.float32)
-                    state[f"{prefix}.bias"] = np.random.randn(32 if k < 4 else 64).astype(np.float32)
+                    state[f"{prefix}.weight"] = Tensor(np.random.randn(32 if k < 4 else 64, 64 + 32 * k, 3, 3).astype(np.float32))
+                    state[f"{prefix}.bias"] = Tensor(np.random.randn(32 if k < 4 else 64).astype(np.float32))
 
         loaded = model.load_state_dict(state)
         assert loaded is model
